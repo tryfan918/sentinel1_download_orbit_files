@@ -39,7 +39,7 @@ logger.addHandler(console_handler)
 
 class SentinelOrbitDownloader:
 
-    def __init__(self, data_directory, orbit_pass_name):
+    def __init__(self, data_directory, orbit_pass_name, insar_processor):
 
         self.slc_directory = os.path.join(data_directory, orbit_pass_name, "slc")
         self.orbit_files_webpage = "https://s1qc.asf.alaska.edu/aux_poeorb/"
@@ -48,6 +48,8 @@ class SentinelOrbitDownloader:
         self.CHUNK_DIVISOR = 4
         self.EOF_DATE_FORMAT = "%Y%m%dT%H%M%S"
         self.MAX_WORKERS = 10
+        self.isce_orbits_directory = os.path.join(data_directory, orbit_pass_name,'orbits')
+        self.insar_processor = insar_processor
 
     def find_satellite_names(self):
         zip_files = glob.glob(os.path.join(self.slc_directory, "*.zip"))
@@ -61,7 +63,7 @@ class SentinelOrbitDownloader:
 
         return list(satellite_names)
 
-    def download_and_zip(self, eof, acquisition_date):
+    def download_and_zip_snap(self, eof, acquisition_date):
         eof_url = f"{self.orbit_files_webpage}/{eof}"
         response = requests.get(eof_url)
 
@@ -79,6 +81,26 @@ class SentinelOrbitDownloader:
                 zf.writestr(os.path.basename(eof), file_content.read())
 
             logger.info(f"Created ZIP file:\n {zip_file_path}")
+        else:
+            logger.error(f"Failed to download {eof_url}. Status code: {response.status_code}")
+            logger.exception("Exception details:")
+
+    def download_and_zip_isce(self, eof, acquisition_date):
+        eof_url = f"{self.orbit_files_webpage}/{eof}"
+        response = requests.get(eof_url)
+
+        if response.status_code == 200:
+            # Read the file content into a BytesIO object
+            file_content = BytesIO(response.content)
+            dir_path = self.isce_orbits_directory
+            os.makedirs(dir_path, exist_ok=True)
+
+            # Save the file content to a file in the local system
+            orbit_file_path = os.path.join(dir_path, os.path.basename(eof))
+            with open(orbit_file_path, 'wb') as f:
+                f.write(file_content.read())
+
+            logger.info(f"Created ZIP file:\n {orbit_file_path}")
         else:
             logger.error(f"Failed to download {eof_url}. Status code: {response.status_code}")
             logger.exception("Exception details:")
@@ -153,7 +175,11 @@ class SentinelOrbitDownloader:
 
                 with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
                     for eof, acquisition_date in zip(matching_eof_files, matched_slc_acquisition_dates):
-                        executor.submit(self.download_and_zip, eof, acquisition_date)
+                        if self.insar_processor == 'isce':
+                            executor.submit(self.download_and_zip_isce, eof, acquisition_date)
+
+                        elif self.insar_processor == 'snap':
+                            executor.submit(self.download_and_zip_snap, eof, acquisition_date)
 
             else:
                 print("No matching strings found.")
@@ -170,12 +196,16 @@ def main():
                         )
     parser.add_argument('--orbit_pass_name',
                         type=str,
-                        help='Name of the orbit pass. ascenidng or descending')
+                        help='Name of the orbit pass. Should be either "ascending" or "descending."')
+
+    parser.add_argument('--insar_processor',
+                        type=str,
+                        help='Name of the software used to process slcs. This determines how the orbit files are saved for use in snap or isce. Should be either "isce" or "snap".')
 
     args = parser.parse_args()
 
     # Create an instance of the OrbitDataProcessor class
-    processor = SentinelOrbitDownloader(args.data_directory, args.orbit_pass_name)
+    processor = SentinelOrbitDownloader(args.data_directory, args.orbit_pass_name, args.insar_processor)
 
     # Process orbit data
 
